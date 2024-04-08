@@ -57,6 +57,7 @@ void get(vector<string>* _URL, int _numberOfThread)
 		string data = cpr::Get(URL, tmOut).text;
 		if (data != "")
 		{
+			mtx.lock();
 			cout << URL << ": getting data." << endl;
 			//Вытаскиваем title страницы
 			string find_begin = "<title>", find_end = "</title>";
@@ -64,7 +65,6 @@ void get(vector<string>* _URL, int _numberOfThread)
 			string title = data.substr(search_begin + find_begin.size(), search_end - search_begin - find_begin.size());
 
 			//Добавление сайта в базу
-			mtx.lock();
 			sqlite3* db;
 			sqlite3_stmt* res;
 			int result = sqlite3_open(DB_NAME, &db);
@@ -85,9 +85,9 @@ void get(vector<string>* _URL, int _numberOfThread)
 		}
 		else
 		{
+			mtx.lock();
 			cout << URL << ": empty or TimeOut." << endl;
 			string sql_query = "UPDATE sites SET is_empty = 'EMPTY' WHERE URL = '" + _URL->at(i) + "';";
-			mtx.lock();
 			sqlite3* db;
 			int result = sqlite3_open(DB_NAME, &db);
 			SQL_CHECK_CONNECTION_MTX	//Проверка на подключение к базе
