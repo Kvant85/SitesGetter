@@ -27,22 +27,25 @@ int currentURL = 0;	//Указатель текущего URL
 #define SQL_CHECK_CONNECTION_MTX if (result != SQLITE_OK) { cout << "Error: " << sqlite3_errmsg(db) << endl; sqlite3_close(db); mtx.unlock(); return; }
 
 //Вывод сообщения об ошибке
-#define SQL_ERROR_COUT cout << "Error adding URL in sites: " << sqlite3_errmsg(db) << endl;
+#define SQL_ERROR_COUT cout << "Error: " << sqlite3_errmsg(db) << endl;
 
 void createTable()
 {
 	sqlite3* db;
 	int result = sqlite3_open(DB_NAME, &db);
 	char* err_msg = 0;
-	SQL_CHECK_CONNECTION	//Проверка на подключение к базе
+	SQL_CHECK_CONNECTION;	//Проверка на подключение к базе
 
 	const char* sql_createTable = "DROP TABLE IF EXISTS 'sites';"	//Убивает содержимое таблицы 'sites', если она существует
 		"CREATE TABLE 'sites' ('id' INTEGER PRIMARY KEY AUTOINCREMENT, 'URL' TEXT UNIQUE, 'title' TEXT, 'is_empty' TEXT);"	//Создаёт новую таблицу 'sites' с 4 полями
+		"DROP TABLE IF EXISTS 'links';"	//Убивает содержимое таблицы 'links', если она существует
+		"CREATE TABLE 'links' ('id' INTEGER PRIMARY KEY AUTOINCREMENT, 'link' TEXT, 'site_id' INTEGER, "	//Создаёт новую таблицу 'links' с 3 полями,
+		"FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE);"	//связанную с таблицей 'sites' по 'sites_id'
 		"VACUUM;";	//Очищает старое пустое место после дропов
 	result = sqlite3_exec(db, sql_createTable, 0, 0, &err_msg);
 
 	if (result != SQLITE_OK) SQL_ERROR_COUT
-	else cout << "Table 'sites' created." << endl;
+	else cout << "Tables 'sites' and 'links' created." << endl;
 
 	sqlite3_free(err_msg);
 	sqlite3_close(db);
@@ -77,6 +80,7 @@ void get(vector<string>* _URL, int _numberOfThread)
 			{
 				mtx.lock();
 				cout << usingURL << ": " << URL << ": getting data." << endl;
+				mtx.unlock();
 				//Вытаскиваем title страницы
 				string find_begin = "<title>", find_end = "</title>";
 				size_t search_begin = data.find(find_begin), search_end = data.find(find_end);
@@ -86,12 +90,32 @@ void get(vector<string>* _URL, int _numberOfThread)
 				else
 					title = "TITLE NOT FOUND!";
 
+				//Парсинг страницы для получения вектора ссылок
+				vector<string> links;
+				find_begin = "href=\"", find_end = "\"";
+				search_begin = 0, search_end;
+				string found_link;
+				while (true)
+				{
+					search_begin = data.find(find_begin);
+					search_end = data.find(find_end, search_begin + find_begin.size());
+					if (search_begin != string::npos && search_end != string::npos)
+					{
+						found_link = data.substr(search_begin + find_begin.size(), search_end - search_begin - find_begin.size());
+						if (found_link.find("http") != string::npos) links.push_back(found_link);
+					}
+					else break;
+					data = data.substr(search_end);
+				}
+
 				//Добавление данных сайта в базу
 				sqlite3* db;
 				sqlite3_stmt* res;
+				mtx.lock();
 				int result = sqlite3_open(DB_NAME, &db);
-				SQL_CHECK_CONNECTION	//Проверка на подключение к базе
+				SQL_CHECK_CONNECTION;	//Проверка на подключение к базе
 
+				//Запись данных по URL
 				string sql_query = "UPDATE sites SET title = ?, is_empty = 'NOT EMPTY' WHERE URL = '" + _URL->at(usingURL) + "';";
 				result = sqlite3_prepare_v2(db, sql_query.c_str(), -1, &res, 0);
 				if (result == SQLITE_OK)
@@ -99,7 +123,26 @@ void get(vector<string>* _URL, int _numberOfThread)
 					sqlite3_bind_text(res, 1, title.c_str(), -1, SQLITE_STATIC);
 					sqlite3_step(res);
 				}
-				else SQL_ERROR_COUT
+				else SQL_ERROR_COUT;
+
+				//Получение id сайта
+				int site_id;
+				sql_query = "SELECT id FROM sites WHERE URL = ?;";
+				result = sqlite3_prepare_v2(db, sql_query.c_str(), -1, &res, 0);
+				if (result != SQLITE_OK) SQL_ERROR_COUT
+				else
+				{
+					sqlite3_bind_text(res, 1, URL.c_str(), -1, SQLITE_STATIC);
+					if (sqlite3_step(res) != SQLITE_DONE) site_id = sqlite3_column_int(res, 0);
+				}
+
+				//Запись ссылок в базу
+				for (auto l : links)
+				{
+					sql_query = "INSERT INTO links ('link', 'site_id') VALUES ('" + l + "', '" + to_string(site_id) + "');";
+					result = sqlite3_exec(db, sql_query.c_str(), 0, 0, &err_msg);
+					if (result != SQLITE_OK) SQL_ERROR_COUT;
+				}
 
 				sqlite3_finalize(res);
 				sqlite3_close(db);
@@ -107,14 +150,14 @@ void get(vector<string>* _URL, int _numberOfThread)
 			}
 			else
 			{
+				sqlite3* db;
+				string sql_query = "UPDATE sites SET is_empty = 'EMPTY' WHERE URL = '" + _URL->at(usingURL) + "';";
 				mtx.lock();
 				cout << usingURL << ": " << URL << ": empty or TimeOut." << endl;
-				string sql_query = "UPDATE sites SET is_empty = 'EMPTY' WHERE URL = '" + _URL->at(usingURL) + "';";
-				sqlite3* db;
 				int result = sqlite3_open(DB_NAME, &db);
-				SQL_CHECK_CONNECTION_MTX	//Проверка на подключение к базе
-					result = sqlite3_exec(db, sql_query.c_str(), 0, 0, &err_msg);
-				if (result != SQLITE_OK) SQL_ERROR_COUT
+				SQL_CHECK_CONNECTION_MTX;	//Проверка на подключение к базе
+				result = sqlite3_exec(db, sql_query.c_str(), 0, 0, &err_msg);
+				if (result != SQLITE_OK) SQL_ERROR_COUT;
 
 				sqlite3_close(db);
 				mtx.unlock();
@@ -165,12 +208,12 @@ void writeURLToDB(vector<string>* _URL)
 	sqlite3* db;
 	int result = sqlite3_open(DB_NAME, &db);
 	char* err_msg = 0;	//SQL-ошибка
-	SQL_CHECK_CONNECTION	//Проверка на подключение к базе
+	SQL_CHECK_CONNECTION;	//Проверка на подключение к базе
 	for (int i = 0; i < _URL->size(); i++)
 	{
 		string query = "INSERT OR IGNORE INTO sites ('URL') VALUES ('" + _URL->at(i) + "');";
 		result = sqlite3_exec(db, query.c_str(), 0, 0, 0);
-		if (result != SQLITE_OK) SQL_ERROR_COUT
+		if (result != SQLITE_OK) SQL_ERROR_COUT;
 	}
 	sqlite3_close(db);
 	cout << " Writing URLs to DB complete." << endl;
